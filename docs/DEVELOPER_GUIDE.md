@@ -301,51 +301,380 @@ contract MyProtocolFacet is SLYWalletReentrancyGuard {
 
 ## 4. Protocol Library Access
 
-### 4.1 Available Libraries
+### 4.1 Core Libraries
 
-You can use these existing libraries in your facet:
+Essential libraries for all facets:
 
 | Library | Import Path | Purpose |
 |---------|-------------|---------|
 | `LibPermissions` | `contracts/slywallet/libraries/LibPermissions.sol` | Role-based access control |
 | `SLYWalletReentrancyGuard` | `contracts/slywallet/SLYWalletReentrancyGuard.sol` | Cross-facet reentrancy protection |
 | `SLYWalletStorage` | `contracts/slywallet/SLYWalletStorage.sol` | Access to base wallet state |
-| `PancakeRouterLib` | `contracts/slywallet/facets/lista/libraries/PancakeRouterLib.sol` | DEX swap execution |
+| `LibSLYDiamond` | `contracts/slywallet/libraries/LibSLYDiamond.sol` | Diamond cut implementation |
 
-### 4.2 PancakeSwap Integration
+### 4.2 Protocol Libraries Overview
 
-For token swaps, use the existing PancakeRouterLib:
+These production-ready libraries are available for building DeFi integrations:
 
+| Library | Import Path | Protocol |
+|---------|-------------|----------|
+| `VenusPoolLib` | `contracts/common/venus/VenusPoolLib.sol` | Venus Protocol (Lending) |
+| `ThenaLib` | `contracts/common/thena/ThenaRouterLib.sol` | Thena DEX (Algebra AMM) |
+| `PancakeRouterLib` | `contracts/common/pancakeswap/PancakeRouterLib.sol` | PancakeSwap V3 |
+| `ListaLendingLib` | `contracts/common/lista/ListaLendingLib.sol` | Lista Lending (Moolah) |
+| `ListaStakingLib` | `contracts/common/lista/ListaStakingLib.sol` | Lista BNB Staking |
+
+---
+
+### 4.3 VenusPoolLib — Venus Protocol Integration
+
+Full-featured library for Venus Protocol lending/borrowing on BSC.
+
+**Import:**
 ```solidity
-import "../lista/libraries/PancakeRouterLib.sol";
-
-function swapTokens(
-    address router,
-    address tokenIn,
-    address tokenOut,
-    uint256 amountIn,
-    uint256 minAmountOut
-) internal returns (uint256 amountOut) {
-    // Exact input single swap
-    amountOut = PancakeRouterLib.exactInputSingle(
-        router,
-        tokenIn,
-        tokenOut,
-        PancakeRouterLib.FEE_LOW,  // 500 = 0.05%
-        amountIn,
-        minAmountOut,
-        address(this)
-    );
-}
+import "../../common/venus/VenusPoolLib.sol";
 ```
 
-### 4.3 Fee Tier Constants
+**Key Functions:**
+
+| Function | Description |
+|----------|-------------|
+| `supplyTokens(vToken, amount)` | Supply ERC20 tokens to Venus, receive vTokens |
+| `supplyBNB(vBnbToken, amount)` | Supply BNB to Venus, receive vBNB |
+| `redeemTokens(vToken, amount, redeemUnderlying)` | Redeem vTokens for underlying assets |
+| `borrowTokens(vToken, amount)` | Borrow assets from Venus |
+| `repayTokens(vToken, amount, repayAll)` | Repay borrowed ERC20 tokens |
+| `repayBNB(vBnbToken, amount, repayAll)` | Repay borrowed BNB |
+| `setCollateralStatus(vToken, useAsCollateral)` | Enable/disable asset as collateral |
+| `claimRewards(vToken)` | Claim XVS rewards |
+| `getHealthFactor(comptroller)` | Get account health factor |
+| `getBorrowBalance(vToken)` | Get current borrow balance |
+
+**Example Usage:**
 
 ```solidity
-uint24 constant FEE_LOWEST = 100;   // 0.01% - Stablecoins
-uint24 constant FEE_LOW = 500;      // 0.05% - Correlated pairs
+import "../../common/venus/VenusPoolLib.sol";
+
+// Supply USDT to Venus
+uint256 vTokensReceived = VenusPoolLib.supplyTokens(vUSDT, usdtAmount);
+
+// Enable as collateral
+VenusPoolLib.setCollateralStatus(vUSDT, true);
+
+// Borrow BNB against collateral
+uint256 borrowed = VenusPoolLib.borrowTokens(vBNB, borrowAmount);
+
+// Check health factor (1e18 = 100%)
+uint256 healthFactor = VenusPoolLib.getHealthFactor(comptroller);
+require(healthFactor > 1.2e18, "Health factor too low");
+```
+
+**Key Addresses (BSC Mainnet):**
+- Comptroller: `0xfD36E2c2a6789Db23113685031d7F16329158384`
+- vUSDT: `0xfD5840Cd36d94D7229439859C0112a4185BC0255`
+- vBNB: `0xA07c5b74C9B40447a954e1466938b865b6BBea36`
+
+---
+
+### 4.4 ThenaLib — Thena DEX Integration
+
+Library for Thena DEX swaps (Algebra AMM style) with concentrated liquidity.
+
+**Import:**
+```solidity
+import "../../common/thena/ThenaRouterLib.sol";
+```
+
+**Key Functions:**
+
+| Function | Description |
+|----------|-------------|
+| `exactInputSingle(...)` | Single-hop swap with exact input |
+| `exactInput(path, amountIn, ...)` | Multi-hop swap with exact input |
+| `exactOutputSingle(...)` | Single-hop swap for exact output |
+| `exactOutput(path, amountOut, ...)` | Multi-hop swap for exact output |
+| `swapETHForTokens(...)` | Swap native BNB for tokens |
+| `swapTokensForETH(...)` | Swap tokens for native BNB |
+| `createPath(tokens, deployers)` | Create encoded swap path |
+| `calculateMinAmountOut(factory, tokenIn, tokenOut, amountIn, slippageBps)` | Calculate min output with slippage |
+
+**Example Usage:**
+
+```solidity
+import "../../common/thena/ThenaRouterLib.sol";
+
+// Single-hop swap
+uint256 amountOut = ThenaLib.exactInputSingle(
+    THENA_ROUTER,
+    tokenIn,
+    tokenOut,
+    poolDeployer,
+    amountIn,
+    minAmountOut,
+    address(this),
+    block.timestamp + 300
+);
+
+// Create multi-hop path
+bytes memory path = ThenaLib.createPath(
+    [USDT, WBNB, THE],   // tokens
+    [deployer1, deployer2] // pool deployers
+);
+
+// Execute multi-hop swap
+uint256 received = ThenaLib.exactInput(
+    THENA_ROUTER,
+    path,
+    amountIn,
+    minAmountOut,
+    address(this),
+    block.timestamp + 300
+);
+```
+
+**Key Addresses (BSC Mainnet):**
+- Router: `0x327Dd3208f0bCF590A66110aCB6e5e6941A4EfA0`
+- Factory: `0x306F06C147f064A010530292A1EB6737c3e378e4`
+
+---
+
+### 4.5 PancakeRouterLib — PancakeSwap V3 Integration
+
+Library for PancakeSwap V3 swaps with concentrated liquidity pools.
+
+**Import:**
+```solidity
+import "../../common/pancakeswap/PancakeRouterLib.sol";
+```
+
+**Fee Tier Constants:**
+```solidity
+uint24 constant FEE_LOWEST = 100;   // 0.01% - Stablecoins (USDT/USDC)
+uint24 constant FEE_LOW = 500;      // 0.05% - Correlated pairs (slisBNB/WBNB)
 uint24 constant FEE_MEDIUM = 2500;  // 0.25% - Standard pairs
-uint24 constant FEE_HIGH = 10000;   // 1.00% - Volatile pairs
+uint24 constant FEE_HIGH = 10000;   // 1.00% - Volatile/exotic pairs
+```
+
+**Key Functions:**
+
+| Function | Description |
+|----------|-------------|
+| `exactInputSingle(router, tokenIn, tokenOut, fee, amountIn, minOut, recipient)` | Single-hop exact input swap |
+| `exactInput(router, path, amountIn, minOut, recipient)` | Multi-hop exact input swap |
+| `exactOutputSingle(...)` | Single-hop exact output swap |
+| `exactOutput(...)` | Multi-hop exact output swap |
+| `createPath(tokenIn, fee, tokenOut)` | Create single-hop path |
+| `createPath(tokens[], fees[])` | Create multi-hop path |
+| `findBestFeeTier(factory, tokenA, tokenB)` | Find highest liquidity fee tier |
+| `quoteExactInputSingle(factory, tokenIn, tokenOut, fee, amountIn)` | Get expected output (view) |
+
+**Example Usage:**
+
+```solidity
+import "../../common/pancakeswap/PancakeRouterLib.sol";
+
+// Single-hop swap with 0.05% fee
+uint256 amountOut = PancakeRouterLib.exactInputSingle(
+    PANCAKE_ROUTER,
+    USDT,
+    WBNB,
+    PancakeRouterLib.FEE_LOW,  // 500
+    usdtAmount,
+    minBnbOut,
+    address(this)
+);
+
+// Multi-hop: USDT -> WBNB -> ETH
+bytes memory path = PancakeRouterLib.createPath(
+    [USDT, WBNB, ETH],
+    [uint24(500), uint24(500)]  // fee tiers
+);
+
+uint256 ethReceived = PancakeRouterLib.exactInput(
+    PANCAKE_ROUTER,
+    path,
+    usdtAmount,
+    minEthOut,
+    address(this)
+);
+
+// Find best fee tier for a pair
+(uint24 bestFee, uint128 liquidity) = PancakeRouterLib.findBestFeeTier(
+    PANCAKE_FACTORY,
+    USDT,
+    WBNB
+);
+```
+
+**Key Addresses (BSC Mainnet):**
+- Router V3: `0x13f4EA83D0bd40E75C8222255bc855a974568Dd4`
+- Factory: `0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865`
+- Quoter: `0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997`
+
+---
+
+### 4.6 ListaLendingLib — Lista Lending (Moolah) Integration
+
+Library for Lista's Moolah lending protocol (Morpho Blue fork) with isolated markets.
+
+**Import:**
+```solidity
+import "../../common/lista/ListaLendingLib.sol";
+```
+
+**Built-in Constants:**
+```solidity
+address constant MOOLAH = 0x8F73b65B4caAf64FBA2aF91cC5D4a2A1318E5D8C;
+address constant SLISBNB = 0xB0b84D294e0C75A6abe60171b70edEb2EFd14A1B;
+address constant WBNB = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+address constant USD1 = 0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d;
+address constant BNB_VAULT = 0x57134a64B7cD9F9eb72F8255A671F5Bf2fe3E2d0;
+address constant USD1_VAULT = 0xfa27f172e0b6ebcEF9c51ABf817E2cb142FbE627;
+```
+
+**Key Functions:**
+
+| Function | Description |
+|----------|-------------|
+| `supplyCollateral(marketParams, amount)` | Supply collateral to a Moolah market |
+| `withdrawCollateral(marketParams, amount, receiver)` | Withdraw collateral |
+| `borrow(marketParams, amount, receiver)` | Borrow assets |
+| `repay(marketParams, amount, useShares)` | Repay borrowed assets |
+| `getPosition(marketParams)` | Get collateral, borrow shares, borrow assets |
+| `calculateHealthFactor(marketParams, collateralPrice, loanPrice)` | Calculate health factor |
+| `calculateMaxBorrow(marketParams, additionalCollateral, ...)` | Get max borrowable amount |
+| `depositToBnbVault(amount)` | Deposit to one-click BNB vault |
+| `depositToUsd1Vault(amount)` | Deposit to one-click USD1 vault |
+
+**Example Usage:**
+
+```solidity
+import "../../common/lista/ListaLendingLib.sol";
+
+// Create market params for slisBNB/WBNB market
+MarketParams memory market = ListaLendingLib.createSlisBnbBnbMarket(
+    oracleAddress,
+    irmAddress,
+    0.86e18  // 86% LLTV
+);
+
+// Supply slisBNB as collateral
+ListaLendingLib.supplyCollateral(market, slisBnbAmount);
+
+// Borrow WBNB
+uint256 borrowed = ListaLendingLib.borrow(market, borrowAmount, address(this));
+
+// Check position
+(uint256 collateral, uint256 borrowShares, uint256 borrowAssets) =
+    ListaLendingLib.getPosition(market);
+
+// Repay all debt using shares (exact repayment)
+ListaLendingLib.repay(market, 0, true);
+
+// Simple one-click vault deposit
+uint256 shares = ListaLendingLib.depositToBnbVault(wbnbAmount);
+```
+
+**Important Notes:**
+- slisBNB markets require routing through `SLISBNB_PROVIDER` (handled automatically)
+- Use share-based repay (`useShares=true`) for exact full repayment to avoid dust
+
+---
+
+### 4.7 ListaStakingLib — Lista BNB Liquid Staking
+
+Library for BNB liquid staking to receive slisBNB.
+
+**Import:**
+```solidity
+import "../../common/lista/ListaStakingLib.sol";
+```
+
+**Built-in Constants:**
+```solidity
+address constant LISTA_STAKE_MANAGER = 0x1adB950d8bB3dA4bE104211D5AB038628e477fE6;
+address constant SLISBNB = 0xB0b84D294e0C75A6abe60171b70edEb2EFd14A1B;
+uint256 constant MIN_STAKE_AMOUNT = 0.1 ether;
+```
+
+**Key Functions:**
+
+| Function | Description |
+|----------|-------------|
+| `stakeBNB(amount)` | Stake BNB to receive slisBNB |
+| `stakeBNBWithMinOut(amount, minSlisBnbOut)` | Stake with slippage protection |
+| `requestWithdrawal(slisBnbAmount)` | Request unstake (7-15 day delay) |
+| `claimWithdrawal(requestIndex)` | Claim completed withdrawal |
+| `getSlisBnbToBnbRate(slisBnbAmount)` | Get BNB value of slisBNB |
+| `getBnbToSlisBnbRate(bnbAmount)` | Get slisBNB value of BNB |
+| `isWithdrawalClaimable(requestIndex)` | Check if withdrawal is ready |
+| `getPendingWithdrawals()` | Get all pending withdrawal requests |
+| `previewStake(bnbAmount)` | Preview slisBNB output |
+| `previewUnstake(slisBnbAmount)` | Preview BNB output |
+
+**Example Usage:**
+
+```solidity
+import "../../common/lista/ListaStakingLib.sol";
+
+// Stake BNB to get slisBNB
+uint256 slisBnbReceived = ListaStakingLib.stakeBNB(bnbAmount);
+
+// Stake with slippage protection
+uint256 minOut = ListaStakingLib.getMinSlisBnbOut(bnbAmount, 100); // 1% slippage
+uint256 received = ListaStakingLib.stakeBNBWithMinOut(bnbAmount, minOut);
+
+// Request unstake (returns request index)
+uint256 requestId = ListaStakingLib.requestWithdrawal(slisBnbAmount);
+
+// Later: check and claim withdrawal
+if (ListaStakingLib.isWithdrawalClaimable(requestId)) {
+    uint256 bnbReceived = ListaStakingLib.claimWithdrawal(requestId);
+}
+
+// View functions
+uint256 bnbValue = ListaStakingLib.getSlisBnbToBnbRate(1e18); // ~1.03 BNB per slisBNB
+uint256 aprBps = ListaStakingLib.getEstimatedStakingAPR(); // ~250 bps (2.5%)
+```
+
+**Important Notes:**
+- Minimum stake: 0.1 BNB
+- Withdrawals have 7-15 day waiting period
+- slisBNB appreciates over time (yield-bearing token)
+
+---
+
+### 4.8 Common Integration Patterns
+
+#### Combining Libraries for Complex Strategies
+
+```solidity
+import "../../common/lista/ListaStakingLib.sol";
+import "../../common/lista/ListaLendingLib.sol";
+import "../../common/pancakeswap/PancakeRouterLib.sol";
+
+function executeLoopStrategy(uint256 bnbAmount, uint256 targetLtvBps) internal {
+    // 1. Stake BNB to get slisBNB
+    uint256 slisBnb = ListaStakingLib.stakeBNB(bnbAmount);
+
+    // 2. Supply slisBNB as collateral
+    MarketParams memory market = ListaLendingLib.createSlisBnbBnbMarket(oracle, irm, lltv);
+    ListaLendingLib.supplyCollateral(market, slisBnb);
+
+    // 3. Borrow WBNB
+    uint256 maxBorrow = ListaLendingLib.calculateMaxBorrow(
+        market, 0, collateralPrice, loanPrice, targetLtvBps
+    );
+    ListaLendingLib.borrow(market, maxBorrow, address(this));
+
+    // 4. Swap borrowed WBNB back to slisBNB for looping
+    uint256 moreSlisBnb = PancakeRouterLib.exactInputSingle(
+        PANCAKE_ROUTER, WBNB, SLISBNB, FEE_LOW, maxBorrow, 0, address(this)
+    );
+
+    // 5. Supply additional slisBNB to increase position
+    ListaLendingLib.supplyCollateral(market, moreSlisBnb);
+}
 ```
 
 ---
