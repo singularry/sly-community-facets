@@ -318,5 +318,4 @@ Scale with more wallets and strategies for higher earnings.
 
 ## Support
 
-- [Developer Discord](https://discord.gg/singularry)
 - [GitHub Issues](https://github.com/singularry/slywallet-contracts/issues)

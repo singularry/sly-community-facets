@@ -1019,7 +1019,6 @@ sed -i 's/basicprotocol/myprotocol/g' submissions/pending/my-protocol-facet/cont
 
 - **GitHub Issues**: [sly-community-facets/issues](https://github.com/singularry/sly-community-facets/issues)
 - **Documentation**: [docs.singularry.com](https://docs.singularry.com)
-- **Discord**: [discord.gg/singularry](https://discord.gg/singularry)
 
 ---
 

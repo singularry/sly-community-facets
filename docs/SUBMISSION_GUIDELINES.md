@@ -205,12 +205,10 @@ Total Fee
    - Validate all inputs
 
 5. **Engage Early**
-   - Join Discord and introduce your idea
    - Get feedback before building
    - Ask questions in #facet-developers
 
 ## Questions?
 
-- Discord: #facet-developers
 - Email: developers@singularry.com
 - Office Hours: Wednesdays 3pm UTC

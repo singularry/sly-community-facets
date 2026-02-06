@@ -145,7 +145,6 @@ Facets are evaluated on:
 
 ## Getting Help
 
-- **Discord**: Join #facet-developers channel
 - **GitHub Issues**: For specific problems
 - **Office Hours**: Weekly Q&A sessions
 
