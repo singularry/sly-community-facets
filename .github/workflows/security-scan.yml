@@ -1,0 +1,187 @@
+name: Security Scan
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'submissions/pending/**'
+
+jobs:
+  detect-submission:
+    runs-on: ubuntu-latest
+    outputs:
+      submission-path: ${{ steps.detect.outputs.path }}
+      submission-name: ${{ steps.detect.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect submission
+        id: detect
+        run: |
+          CHANGED=$(git diff --name-only origin/main...HEAD | grep '^submissions/pending/' | head -1)
+          if [ -n "$CHANGED" ]; then
+            FACET_DIR=$(echo "$CHANGED" | cut -d'/' -f3)
+            echo "path=submissions/pending/$FACET_DIR" >> $GITHUB_OUTPUT
+            echo "name=$FACET_DIR" >> $GITHUB_OUTPUT
+          fi
+
+  slither:
+    needs: detect-submission
+    if: needs.detect-submission.outputs.submission-path != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Slither
+        run: pip3 install slither-analyzer
+
+      - name: Run Slither
+        id: slither
+        run: |
+          cd ${{ needs.detect-submission.outputs.submission-path }}
+          slither . --json slither-results.json --checklist 2>&1 | tee slither-output.txt || true
+
+          # Count issues by severity
+          HIGH=$(cat slither-results.json | jq '[.results.detectors[] | select(.impact == "High")] | length' || echo 0)
+          MEDIUM=$(cat slither-results.json | jq '[.results.detectors[] | select(.impact == "Medium")] | length' || echo 0)
+          LOW=$(cat slither-results.json | jq '[.results.detectors[] | select(.impact == "Low")] | length' || echo 0)
+
+          echo "High: $HIGH, Medium: $MEDIUM, Low: $LOW"
+
+          if [ "$HIGH" -gt 0 ]; then
+            echo "::error::Found $HIGH high severity issues"
+            echo "has-critical=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-critical=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+          echo "low=$LOW" >> $GITHUB_OUTPUT
+
+      - name: Upload Slither results
+        uses: actions/upload-artifact@v4
+        with:
+          name: slither-results-${{ needs.detect-submission.outputs.submission-name }}
+          path: |
+            ${{ needs.detect-submission.outputs.submission-path }}/slither-results.json
+            ${{ needs.detect-submission.outputs.submission-path }}/slither-output.txt
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const high = '${{ steps.slither.outputs.high }}';
+            const medium = '${{ steps.slither.outputs.medium }}';
+            const low = '${{ steps.slither.outputs.low }}';
+
+            let status = ':white_check_mark: No critical issues found';
+            if (parseInt(high) > 0) {
+              status = ':x: **Critical issues found - must be fixed before approval**';
+            } else if (parseInt(medium) > 0) {
+              status = ':warning: Medium severity issues found - review recommended';
+            }
+
+            const body = `## Slither Security Scan Results
+
+            ${status}
+
+            | Severity | Count |
+            |----------|-------|
+            | :red_circle: High | ${high} |
+            | :orange_circle: Medium | ${medium} |
+            | :yellow_circle: Low | ${low} |
+
+            Download the full report from the workflow artifacts.
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Fail on critical issues
+        if: steps.slither.outputs.has-critical == 'true'
+        run: exit 1
+
+  reentrancy-check:
+    needs: detect-submission
+    if: needs.detect-submission.outputs.submission-path != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for reentrancy protection
+        run: |
+          SUBMISSION_PATH="${{ needs.detect-submission.outputs.submission-path }}"
+
+          echo "Checking for reentrancy protection..."
+
+          # Find main facet contracts (not interfaces or storage)
+          FACETS=$(find "$SUBMISSION_PATH/contracts" -name "*.sol" ! -name "I*.sol" ! -name "*Storage.sol")
+
+          for file in $FACETS; do
+            echo "Checking $file..."
+
+            # Check if it inherits from SLYWalletReentrancyGuard
+            if ! grep -q "SLYWalletReentrancyGuard" "$file"; then
+              echo "::warning file=$file::Does not inherit from SLYWalletReentrancyGuard"
+            fi
+
+            # Check for nonReentrant modifier on external functions
+            # This is a simple check - may have false positives
+            EXTERNAL_FUNCS=$(grep -c "external" "$file" || echo 0)
+            NONREENTRANT=$(grep -c "nonReentrant" "$file" || echo 0)
+
+            if [ "$EXTERNAL_FUNCS" -gt 0 ] && [ "$NONREENTRANT" -eq 0 ]; then
+              echo "::warning file=$file::Has external functions but no nonReentrant modifiers"
+            fi
+          done
+
+  access-control-check:
+    needs: detect-submission
+    if: needs.detect-submission.outputs.submission-path != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for access control
+        run: |
+          SUBMISSION_PATH="${{ needs.detect-submission.outputs.submission-path }}"
+
+          echo "Checking for access control..."
+
+          FACETS=$(find "$SUBMISSION_PATH/contracts" -name "*.sol" ! -name "I*.sol" ! -name "*Storage.sol")
+
+          for file in $FACETS; do
+            echo "Checking $file..."
+
+            # Check for onlyAdmin or similar modifiers
+            if ! grep -q "onlyAdmin\|onlyOwner\|LibPermissions" "$file"; then
+              echo "::warning file=$file::No access control modifiers found"
+            fi
+
+            # Check for LibPermissions import
+            if ! grep -q "import.*LibPermissions" "$file"; then
+              echo "::warning file=$file::LibPermissions not imported"
+            fi
+          done

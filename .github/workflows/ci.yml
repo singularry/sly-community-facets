@@ -1,0 +1,191 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'submissions/pending/**'
+  push:
+    branches: [main]
+    paths:
+      - 'submissions/pending/**'
+
+jobs:
+  detect-submission:
+    runs-on: ubuntu-latest
+    outputs:
+      submission-path: ${{ steps.detect.outputs.path }}
+      submission-name: ${{ steps.detect.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect submission
+        id: detect
+        run: |
+          # Get changed files in submissions/pending/
+          CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '^submissions/pending/' | head -1)
+          if [ -z "$CHANGED" ]; then
+            CHANGED=$(git diff --name-only origin/main...HEAD | grep '^submissions/pending/' | head -1)
+          fi
+
+          if [ -n "$CHANGED" ]; then
+            # Extract facet directory name
+            FACET_DIR=$(echo "$CHANGED" | cut -d'/' -f3)
+            echo "path=submissions/pending/$FACET_DIR" >> $GITHUB_OUTPUT
+            echo "name=$FACET_DIR" >> $GITHUB_OUTPUT
+            echo "Found submission: $FACET_DIR"
+          else
+            echo "No submission found"
+            echo "path=" >> $GITHUB_OUTPUT
+            echo "name=" >> $GITHUB_OUTPUT
+          fi
+
+  compile:
+    needs: detect-submission
+    if: needs.detect-submission.outputs.submission-path != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile contracts
+        run: npx hardhat compile
+        working-directory: ${{ needs.detect-submission.outputs.submission-path }}
+
+      - name: Check contract sizes
+        run: npx hardhat size-contracts
+        working-directory: ${{ needs.detect-submission.outputs.submission-path }}
+
+  test:
+    needs: [detect-submission, compile]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npx hardhat test
+        working-directory: ${{ needs.detect-submission.outputs.submission-path }}
+        env:
+          # Archive RPC for fork tests (if needed)
+          BSC_RPC_URL: ${{ secrets.BSC_RPC_URL }}
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ needs.detect-submission.outputs.submission-name }}
+          path: ${{ needs.detect-submission.outputs.submission-path }}/test-results/
+
+  coverage:
+    needs: [detect-submission, compile]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run coverage
+        run: npx hardhat coverage
+        working-directory: ${{ needs.detect-submission.outputs.submission-path }}
+        continue-on-error: true
+
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=$(cat coverage/coverage-summary.json | jq '.total.lines.pct')
+          echo "Line coverage: $COVERAGE%"
+          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+            echo "::warning::Coverage is below 80% threshold"
+          fi
+        working-directory: ${{ needs.detect-submission.outputs.submission-path }}
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ needs.detect-submission.outputs.submission-name }}
+          path: ${{ needs.detect-submission.outputs.submission-path }}/coverage/
+
+  structure-check:
+    needs: detect-submission
+    if: needs.detect-submission.outputs.submission-path != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required files
+        run: |
+          SUBMISSION_PATH="${{ needs.detect-submission.outputs.submission-path }}"
+
+          echo "Checking submission structure..."
+
+          # Required directories
+          for dir in contracts test scripts; do
+            if [ ! -d "$SUBMISSION_PATH/$dir" ]; then
+              echo "::error::Missing required directory: $dir/"
+              exit 1
+            fi
+          done
+
+          # Required files
+          if [ ! -f "$SUBMISSION_PATH/README.md" ]; then
+            echo "::error::Missing README.md"
+            exit 1
+          fi
+
+          # Check for at least one contract
+          if [ -z "$(ls -A $SUBMISSION_PATH/contracts/*.sol 2>/dev/null)" ]; then
+            echo "::error::No Solidity contracts found in contracts/"
+            exit 1
+          fi
+
+          # Check for at least one test
+          if [ -z "$(ls -A $SUBMISSION_PATH/test/*.js 2>/dev/null)" ] && \
+             [ -z "$(ls -A $SUBMISSION_PATH/test/*.ts 2>/dev/null)" ]; then
+            echo "::error::No test files found in test/"
+            exit 1
+          fi
+
+          echo "Structure check passed!"
+
+      - name: Check storage pattern
+        run: |
+          SUBMISSION_PATH="${{ needs.detect-submission.outputs.submission-path }}"
+
+          # Check for unique storage hash
+          STORAGE_FILES=$(find "$SUBMISSION_PATH/contracts" -name "*Storage.sol")
+          for file in $STORAGE_FILES; do
+            if grep -q 'STORAGE_POSITION = keccak256' "$file"; then
+              HASH=$(grep 'STORAGE_POSITION = keccak256' "$file" | grep -o '"[^"]*"')
+              echo "Found storage hash: $HASH in $file"
+
+              # Check it's not using a template hash
+              if echo "$HASH" | grep -q "basicprotocol\|lendingprotocol\|swapprotocol"; then
+                echo "::warning::Storage hash appears to be from template - please make unique"
+              fi
+            fi
+          done

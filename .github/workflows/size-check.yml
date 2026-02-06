@@ -1,0 +1,122 @@
+name: Contract Size Check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'submissions/pending/**'
+
+jobs:
+  detect-submission:
+    runs-on: ubuntu-latest
+    outputs:
+      submission-path: ${{ steps.detect.outputs.path }}
+      submission-name: ${{ steps.detect.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect submission
+        id: detect
+        run: |
+          CHANGED=$(git diff --name-only origin/main...HEAD | grep '^submissions/pending/' | head -1)
+          if [ -n "$CHANGED" ]; then
+            FACET_DIR=$(echo "$CHANGED" | cut -d'/' -f3)
+            echo "path=submissions/pending/$FACET_DIR" >> $GITHUB_OUTPUT
+            echo "name=$FACET_DIR" >> $GITHUB_OUTPUT
+          fi
+
+  size-check:
+    needs: detect-submission
+    if: needs.detect-submission.outputs.submission-path != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile with size output
+        id: compile
+        run: |
+          cd ${{ needs.detect-submission.outputs.submission-path }}
+
+          # Compile and get sizes
+          npx hardhat compile
+
+          # Check sizes via hardhat task (if available)
+          npx hardhat size-contracts 2>&1 | tee size-output.txt || true
+
+          # Parse sizes and check for violations
+          OVERSIZED=$(grep -E "([2-9][4-9]|[3-9][0-9])\.[0-9]+ KiB" size-output.txt || true)
+
+          if [ -n "$OVERSIZED" ]; then
+            echo "::error::One or more contracts exceed 24KB limit"
+            echo "$OVERSIZED"
+            echo "has-oversized=true" >> $GITHUB_OUTPUT
+          else
+            echo "All contracts within size limit"
+            echo "has-oversized=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-report-${{ needs.detect-submission.outputs.submission-name }}
+          path: ${{ needs.detect-submission.outputs.submission-path }}/size-output.txt
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs');
+            const path = '${{ needs.detect-submission.outputs.submission-path }}/size-output.txt';
+
+            let sizeOutput = 'Unable to read size output';
+            try {
+              sizeOutput = fs.readFileSync(path, 'utf8');
+            } catch (e) {
+              console.log('Could not read size output file');
+            }
+
+            const hasOversized = '${{ steps.compile.outputs.has-oversized }}' === 'true';
+            const status = hasOversized
+              ? ':x: **Contract size exceeds 24KB limit**'
+              : ':white_check_mark: All contracts within size limits';
+
+            const body = `## Contract Size Check
+
+            ${status}
+
+            <details>
+            <summary>Size Details</summary>
+
+            \`\`\`
+            ${sizeOutput.substring(0, 3000)}
+            \`\`\`
+
+            </details>
+
+            *Note: Contracts must be under 24KB to deploy on mainnet.*
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Fail if oversized
+        if: steps.compile.outputs.has-oversized == 'true'
+        run: |
+          echo "One or more contracts exceed the 24KB size limit"
+          exit 1

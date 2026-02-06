@@ -1,0 +1,35 @@
+{
+  "name": "sly-community-facets",
+  "version": "1.0.0",
+  "description": "Community-contributed facets for the SLYWallet ecosystem",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "coverage": "hardhat coverage",
+    "size": "hardhat size-contracts",
+    "lint": "solhint 'submissions/**/*.sol'",
+    "lint:fix": "solhint 'submissions/**/*.sol' --fix"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@openzeppelin/contracts": "^5.0.0",
+    "hardhat": "^2.19.0",
+    "solhint": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/singularry/sly-community-facets.git"
+  },
+  "keywords": [
+    "solidity",
+    "smart-contracts",
+    "diamond-standard",
+    "eip-2535",
+    "slywallet",
+    "defi"
+  ]
+}
